@@ -8,6 +8,9 @@ class PiRpcClient {
   Process? _process;
   int _reqId = 0;
   bool _disposed = false;
+  String _cwd = Directory.current.path;
+
+  String get cwd => _cwd;
 
   final _eventController = StreamController<Map<String, dynamic>>.broadcast();
   Stream<Map<String, dynamic>> get events => _eventController.stream;
@@ -16,10 +19,16 @@ class PiRpcClient {
       StreamController<Map<String, dynamic>>.broadcast();
   Stream<Map<String, dynamic>> get responses => _responseController.stream;
 
-  Future<void> start() async {
+  Future<void> start({String? workingDirectory}) async {
+    _cwd = workingDirectory ?? Directory.current.path;
+    await _spawn();
+  }
+
+  Future<void> _spawn() async {
     _process = await Process.start(
       'pi',
       ['--mode', 'rpc', '--no-session'],
+      workingDirectory: _cwd,
       mode: ProcessStartMode.normal,
     );
 
@@ -50,6 +59,13 @@ class PiRpcClient {
         _eventController.add({'type': 'process_exit'});
       }
     });
+  }
+
+  Future<void> restart(String workingDirectory) async {
+    _cwd = workingDirectory;
+    _process?.kill();
+    await _spawn();
+    _eventController.add({'type': 'process_restart'});
   }
 
   String send(Map<String, dynamic> command) {

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 
@@ -35,13 +36,14 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _initClient() async {
     await _client.start();
     _client.events.listen(_handleEvent);
+    await _fetchModelsAndState();
+    setState(() => _ready = true);
+  }
 
-    // Fetch available models and current state
+  Future<void> _fetchModelsAndState() async {
     final modelsRes = await _client.request({'type': 'get_available_models'});
     final stateRes = await _client.request({'type': 'get_state'});
-
     setState(() {
-      _ready = true;
       if (modelsRes?['success'] == true) {
         _models = List<Map<String, dynamic>>.from(
             modelsRes!['data']['models'] ?? []);
@@ -52,6 +54,52 @@ class _ChatScreenState extends State<ChatScreen> {
             stateRes['data']['thinkingLevel'] as String? ?? '';
       }
     });
+  }
+
+  Future<void> _changeDirectory() async {
+    final controller = TextEditingController(text: _client.cwd);
+    final newDir = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Working Directory'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: '/path/to/project',
+            border: OutlineInputBorder(),
+          ),
+          onSubmitted: (v) => Navigator.of(ctx).pop(v),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(controller.text),
+            child: const Text('Restart'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+
+    if (newDir == null || newDir.trim().isEmpty) return;
+    final dir = Directory(newDir.trim());
+    if (!await dir.exists()) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Directory does not exist')),
+        );
+      }
+      return;
+    }
+
+    setState(() => _ready = false);
+    await _client.restart(dir.path);
+    await _fetchModelsAndState();
+    setState(() => _ready = true);
   }
 
   Future<void> _selectModel(Map<String, dynamic> model) async {
@@ -235,6 +283,11 @@ class _ChatScreenState extends State<ChatScreen> {
 
     return Scaffold(
       appBar: AppBar(
+        leading: IconButton(
+          icon: const Icon(Icons.folder_open),
+          tooltip: _client.cwd,
+          onPressed: _changeDirectory,
+        ),
         title: const Text('Pi Pi'),
         actions: [
           if (_models.isNotEmpty)
