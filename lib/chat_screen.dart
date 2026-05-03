@@ -57,33 +57,10 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _changeDirectory() async {
-    final controller = TextEditingController(text: _client.cwd);
     final newDir = await showDialog<String>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Working Directory'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(
-            hintText: '/path/to/project',
-            border: OutlineInputBorder(),
-          ),
-          onSubmitted: (v) => Navigator.of(ctx).pop(v),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(controller.text),
-            child: const Text('Restart'),
-          ),
-        ],
-      ),
+      builder: (_) => _DirectoryDialog(initialPath: _client.cwd),
     );
-    controller.dispose();
 
     if (newDir == null || newDir.trim().isEmpty) return;
     final dir = Directory(newDir.trim());
@@ -613,6 +590,58 @@ class _InputBar extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+// ─── Directory Dialog ────────────────────────────────────────────────────────
+
+class _DirectoryDialog extends StatefulWidget {
+  final String initialPath;
+  const _DirectoryDialog({required this.initialPath});
+
+  @override
+  State<_DirectoryDialog> createState() => _DirectoryDialogState();
+}
+
+class _DirectoryDialogState extends State<_DirectoryDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialPath);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Working Directory'),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        decoration: const InputDecoration(
+          hintText: '/path/to/project',
+          border: OutlineInputBorder(),
+        ),
+        onSubmitted: (v) => Navigator.of(context).pop(v),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(_controller.text),
+          child: const Text('Restart'),
+        ),
+      ],
     );
   }
 }
