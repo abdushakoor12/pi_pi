@@ -52,12 +52,32 @@ class PiRpcClient {
     });
   }
 
-  void send(Map<String, dynamic> command) {
-    if (_process == null || _disposed) return;
+  String send(Map<String, dynamic> command) {
     final id = 'req-${_reqId++}';
     command['id'] = id;
-    _process!.stdin.write('${jsonEncode(command)}\n');
-    _process!.stdin.flush();
+    _process?.stdin.write('${jsonEncode(command)}\n');
+    _process?.stdin.flush();
+    return id;
+  }
+
+  Future<Map<String, dynamic>?> request(Map<String, dynamic> command,
+      {Duration timeout = const Duration(seconds: 10)}) async {
+    final id = send(command);
+    final completer = Completer<Map<String, dynamic>?>();
+    late StreamSubscription<Map<String, dynamic>> sub;
+    sub = responses.listen((response) {
+      if (response['id'] == id) {
+        completer.complete(response);
+        sub.cancel();
+      }
+    });
+    Timer(timeout, () {
+      if (!completer.isCompleted) {
+        completer.complete(null);
+        sub.cancel();
+      }
+    });
+    return completer.future;
   }
 
   Future<void> dispose() async {

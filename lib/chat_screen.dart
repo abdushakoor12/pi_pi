@@ -21,6 +21,10 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _agentRunning = false;
   int? _streamingIndex;
 
+  List<Map<String, dynamic>> _models = [];
+  Map<String, dynamic>? _currentModel;
+  String _currentThinkingLevel = '';
+
   @override
   void initState() {
     super.initState();
@@ -30,8 +34,35 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _initClient() async {
     await _client.start();
-    setState(() => _ready = true);
     _client.events.listen(_handleEvent);
+
+    // Fetch available models and current state
+    final modelsRes = await _client.request({'type': 'get_available_models'});
+    final stateRes = await _client.request({'type': 'get_state'});
+
+    setState(() {
+      _ready = true;
+      if (modelsRes?['success'] == true) {
+        _models = List<Map<String, dynamic>>.from(
+            modelsRes!['data']['models'] ?? []);
+      }
+      if (stateRes?['success'] == true) {
+        _currentModel = stateRes!['data']['model'] as Map<String, dynamic>?;
+        _currentThinkingLevel =
+            stateRes['data']['thinkingLevel'] as String? ?? '';
+      }
+    });
+  }
+
+  Future<void> _selectModel(Map<String, dynamic> model) async {
+    final res = await _client.request({
+      'type': 'set_model',
+      'provider': model['provider'],
+      'modelId': model['id'],
+    });
+    if (res?['success'] == true && res!['data'] != null) {
+      setState(() => _currentModel = res['data'] as Map<String, dynamic>);
+    }
   }
 
   void _handleEvent(Map<String, dynamic> event) {
@@ -197,13 +228,66 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final modelLabel = _currentModel != null
+        ? '${_currentModel!['name'] ?? _currentModel!['id']}'
+            '${_currentThinkingLevel.isNotEmpty ? ' ($_currentThinkingLevel)' : ''}'
+        : (_ready ? 'No model' : 'Loading...');
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Pi Pi'),
         actions: [
+          if (_models.isNotEmpty)
+            PopupMenuButton<Map<String, dynamic>>(
+              tooltip: 'Select model',
+              icon: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(modelLabel,
+                      style: const TextStyle(fontSize: 12)),
+                  const SizedBox(width: 4),
+                  const Icon(Icons.arrow_drop_down),
+                ],
+              ),
+              onSelected: _selectModel,
+              itemBuilder: (context) => _models.map((m) {
+                final isSelected = _currentModel != null &&
+                    m['provider'] == _currentModel!['provider'] &&
+                    m['id'] == _currentModel!['id'];
+                return PopupMenuItem<Map<String, dynamic>>(
+                  value: m,
+                  child: Row(
+                    children: [
+                      Icon(
+                        isSelected ? Icons.check_circle : Icons.circle_outlined,
+                        size: 16,
+                        color: isSelected ? Colors.greenAccent : Colors.grey,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          m['name'] as String? ?? m['id'] as String? ?? '',
+                          style: TextStyle(
+                            fontWeight:
+                                isSelected ? FontWeight.bold : FontWeight.normal,
+                          ),
+                        ),
+                      ),
+                      Text(
+                        m['provider'] as String? ?? '',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.grey.shade500,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }).toList(),
+            ),
           if (_agentRunning)
             const Padding(
-              padding: EdgeInsets.only(right: 16),
+              padding: EdgeInsets.only(right: 12),
               child: Center(
                 child: SizedBox(
                   width: 16,
