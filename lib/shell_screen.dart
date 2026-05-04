@@ -396,20 +396,8 @@ class _TopToolbar extends StatelessWidget {
 
           const SizedBox(width: 8),
 
-          // Pi Pi logo/title
-          Icon(Icons.terminal, size: 18, color: cs.primary),
-          const SizedBox(width: 6),
-          Text(
-            'Pi Pi',
-            style: TextStyle(
-              fontSize: 15,
-              fontWeight: FontWeight.bold,
-              color: cs.onSurface,
-            ),
-          ),
-
           // Current directory badge
-          const SizedBox(width: 12),
+          const SizedBox(width: 8),
           GestureDetector(
             onTap: ready ? onChangeDirectory : null,
             child: Container(

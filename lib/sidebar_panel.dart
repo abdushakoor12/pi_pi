@@ -139,16 +139,6 @@ class _SidebarPanelState extends State<SidebarPanel>
             ),
             child: Row(
               children: [
-                Icon(Icons.terminal, size: 18, color: cs.primary),
-                const SizedBox(width: 8),
-                Text(
-                  'Pi Pi',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: cs.onSurface,
-                  ),
-                ),
                 const Spacer(),
                 // New chat
                 _SmallIconButton(
