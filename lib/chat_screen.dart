@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
+import 'package:flutter_markdown/flutter_markdown.dart';
+
 import 'chat_message.dart';
 import 'git_info.dart';
 import 'pi_rpc_client.dart';
@@ -859,12 +861,105 @@ class _MessageBubble extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   SelectionArea(
-                    child: Text(
-                      message.text.isEmpty
-                          ? (message.isStreaming ? '...' : '')
-                          : message.text,
-                      style: const TextStyle(fontSize: 14, height: 1.4),
-                    ),
+                    child: message.text.isEmpty
+                        ? Text(
+                            message.isStreaming ? '...' : '',
+                            style: const TextStyle(fontSize: 14, height: 1.4),
+                          )
+                        : MarkdownBody(
+                            data: message.text,
+                            styleSheet: MarkdownStyleSheet(
+                              p: const TextStyle(fontSize: 14, height: 1.4),
+                              h1: TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                                color: Theme.of(context).colorScheme.onSurface,
+                                height: 1.3,
+                              ),
+                              h2: TextStyle(
+                                fontSize: 17,
+                                fontWeight: FontWeight.bold,
+                                color: Theme.of(context).colorScheme.onSurface,
+                                height: 1.3,
+                              ),
+                              h3: TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.bold,
+                                color: Theme.of(context).colorScheme.onSurface,
+                                height: 1.3,
+                              ),
+                              code: TextStyle(
+                                fontSize: 13,
+                                fontFamily: 'monospace',
+                                color: Theme.of(context).brightness == Brightness.dark
+                                    ? const Color(0xFFE6DB74)
+                                    : const Color(0xFF4A4A4A),
+                                backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                              ),
+                              codeblockDecoration: BoxDecoration(
+                                color: Theme.of(context).brightness == Brightness.dark
+                                    ? Colors.grey.shade900
+                                    : Colors.grey.shade100,
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color: Theme.of(context).brightness == Brightness.dark
+                                      ? Colors.grey.shade700
+                                      : Colors.grey.shade300,
+                                ),
+                              ),
+
+                              blockquoteDecoration: BoxDecoration(
+                                border: Border(
+                                  left: BorderSide(
+                                    color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.4),
+                                    width: 3,
+                                  ),
+                                ),
+                              ),
+                              blockquote: TextStyle(
+                                fontStyle: FontStyle.italic,
+                                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                              ),
+                              listBullet: TextStyle(
+                                fontSize: 14,
+                                color: Theme.of(context).colorScheme.onSurface,
+                              ),
+                              horizontalRuleDecoration: BoxDecoration(
+                                border: Border(
+                                  top: BorderSide(
+                                    width: 1,
+                                    color: Theme.of(context).colorScheme.outlineVariant,
+                                  ),
+                                ),
+                              ),
+                              strong: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Theme.of(context).colorScheme.onSurface,
+                              ),
+                              em: const TextStyle(fontStyle: FontStyle.italic),
+                              a: TextStyle(
+                                color: Theme.of(context).colorScheme.primary,
+                                decoration: TextDecoration.underline,
+                              ),
+                              del: TextStyle(
+                                decoration: TextDecoration.lineThrough,
+                                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                              ),
+                              tableBorder: TableBorder.all(
+                                color: Theme.of(context).colorScheme.outlineVariant,
+                                width: 1,
+                              ),
+                              tableHead: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13,
+                                color: Theme.of(context).colorScheme.onSurface,
+                              ),
+                              tableBody: TextStyle(
+                                fontSize: 13,
+                                color: Theme.of(context).colorScheme.onSurface,
+                              ),
+                            ),
+                          ),
                   ),
                   if (message.isStreaming)
                     const Padding(
