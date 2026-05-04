@@ -160,6 +160,44 @@ class _ChatScreenState extends State<ChatScreen> {
     state.setThemeMode(next);
   }
 
+  // ── New chat ────────────────────────────────────────────────────────────
+
+  Future<void> _newChat() async {
+    if (_messages.isNotEmpty) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Start a new chat?'),
+          content: const Text(
+            'The current conversation will be saved and available in session history.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('New Chat'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+    }
+
+    setState(() {
+      _ready = false;
+      _messages.clear();
+    });
+
+    await _client.restart(_client.cwd);
+    await _fetchModelsAndState();
+    await _updateGitInfo();
+
+    if (mounted) setState(() => _ready = true);
+  }
+
   // ── Session history ──────────────────────────────────────────────────────
 
   Future<void> _showHistory() async {
@@ -516,6 +554,11 @@ class _ChatScreenState extends State<ChatScreen> {
                       ),
                     )
                 : null,
+          ),
+          IconButton(
+            icon: const Icon(Icons.add_comment_outlined),
+            tooltip: 'New chat',
+            onPressed: _ready ? _newChat : null,
           ),
           IconButton(
             icon: const Icon(Icons.history),
