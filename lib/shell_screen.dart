@@ -124,7 +124,10 @@ class _ShellScreenState extends State<ShellScreen> {
 
     if (mounted) {
       setState(() => _ready = true);
-      _chatKey.currentState?.reset();
+      // Wait for the next frame so ChatContent is built and its state is available
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _chatKey.currentState?.reset();
+      });
     }
   }
 
@@ -136,7 +139,10 @@ class _ShellScreenState extends State<ShellScreen> {
 
     if (mounted) {
       setState(() => _ready = true);
-      _chatKey.currentState?.loadSession(sessionPath);
+      // Wait for the next frame so ChatContent is built and its state is available
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _chatKey.currentState?.loadSession(sessionPath);
+      });
     }
   }
 
@@ -176,7 +182,10 @@ class _ShellScreenState extends State<ShellScreen> {
 
       if (mounted) {
         setState(() => _ready = true);
-        _chatKey.currentState?.reset();
+        // Wait for the next frame so ChatContent is built and its state is available
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _chatKey.currentState?.reset();
+        });
       }
     }
   }
