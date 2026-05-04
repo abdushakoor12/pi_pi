@@ -21,6 +21,12 @@ class PiRpcClient {
       StreamController<Map<String, dynamic>>.broadcast();
   Stream<Map<String, dynamic>> get responses => _responseController.stream;
 
+  /// Update the stored CWD without restarting. Used to sync the client's
+  /// view of the working directory before a restart.
+  void updateCwd(String path) {
+    _cwd = path;
+  }
+
   Future<void> start({String? workingDirectory, String? sessionPath}) async {
     _cwd = workingDirectory ?? Directory.current.path;
     _sessionPath = sessionPath;

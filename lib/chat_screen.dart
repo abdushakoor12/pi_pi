@@ -1,14 +1,28 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import 'chat_message.dart';
+import 'git_info.dart';
 import 'pi_rpc_client.dart';
+import 'project_manager.dart';
+import 'project_screen.dart';
 import 'session_manager.dart';
 
 class ChatScreen extends StatefulWidget {
-  const ChatScreen({super.key});
+  /// Optional initial CWD to start pi in.
+  final String? initialCwd;
+
+  /// The parent [MyAppState] so we can toggle the theme.
+  final dynamic appThemeState;
+
+  const ChatScreen({
+    super.key,
+    this.initialCwd,
+    this.appThemeState,
+  });
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -27,6 +41,10 @@ class _ChatScreenState extends State<ChatScreen> {
   Map<String, dynamic>? _currentModel;
   String _currentThinkingLevel = '';
 
+  // Git info
+  String? _gitBranch;
+  bool _isGitRepo = false;
+
   @override
   void initState() {
     super.initState();
@@ -35,10 +53,26 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _initClient() async {
+    // If we have a persisted CWD, use it; otherwise fall back to current dir.
+    if (widget.initialCwd != null) {
+      _client.updateCwd(widget.initialCwd!);
+    }
     await _client.start();
     _client.events.listen(_handleEvent);
     await _fetchModelsAndState();
+    await _updateGitInfo();
     setState(() => _ready = true);
+  }
+
+  Future<void> _updateGitInfo() async {
+    final branch = await GitInfo.getBranch(_client.cwd);
+    final isRepo = await GitInfo.isGitRepo(_client.cwd);
+    if (mounted) {
+      setState(() {
+        _gitBranch = branch;
+        _isGitRepo = isRepo;
+      });
+    }
   }
 
   Future<void> _fetchModelsAndState() async {
@@ -57,14 +91,16 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  /// Open native directory picker, then restart pi in the chosen folder.
   Future<void> _changeDirectory() async {
-    final newDir = await showDialog<String>(
-      context: context,
-      builder: (_) => _DirectoryDialog(initialPath: _client.cwd),
+    final picked = await FilePicker.platform.getDirectoryPath(
+      dialogTitle: 'Select working directory',
+      initialDirectory: _client.cwd,
     );
 
-    if (newDir == null || newDir.trim().isEmpty) return;
-    final dir = Directory(newDir.trim());
+    if (picked == null || picked.trim().isEmpty) return;
+
+    final dir = Directory(picked.trim());
     if (!await dir.exists()) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -74,9 +110,21 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
 
+    await _switchToDirectory(dir.path);
+  }
+
+  /// Switch to a new working directory and restart pi.
+  Future<void> _switchToDirectory(String path) async {
     setState(() => _ready = false);
-    await _client.restart(dir.path);
+
+    // Persist the new CWD
+    await ProjectManager.setLastCwd(path);
+    _client.updateCwd(path);
+
+    await _client.restart(path);
     await _fetchModelsAndState();
+    await _updateGitInfo();
+
     setState(() => _ready = true);
   }
 
@@ -90,6 +138,29 @@ class _ChatScreenState extends State<ChatScreen> {
       setState(() => _currentModel = res['data'] as Map<String, dynamic>);
     }
   }
+
+  // ── Theme cycling ────────────────────────────────────────────────────────
+
+  void _cycleTheme() {
+    final state = widget.appThemeState;
+    if (state == null) return;
+    final current = state.themeMode as ThemeMode;
+    ThemeMode next;
+    switch (current) {
+      case ThemeMode.system:
+        next = ThemeMode.light;
+        break;
+      case ThemeMode.light:
+        next = ThemeMode.dark;
+        break;
+      case ThemeMode.dark:
+        next = ThemeMode.system;
+        break;
+    }
+    state.setThemeMode(next);
+  }
+
+  // ── Session history ──────────────────────────────────────────────────────
 
   Future<void> _showHistory() async {
     final sessions = await SessionManager.listSessions(_client.cwd);
@@ -116,11 +187,9 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() => _ready = false);
     _messages.clear();
 
-    // 1. Parse the session file locally and display messages
     final raw = await SessionManager.loadMessages(path);
     _convertAndShow(raw);
 
-    // 2. Restart pi attached to this session so future prompts continue from it
     await _client.restart(_client.cwd, sessionPath: path);
     await _fetchModelsAndState();
 
@@ -180,7 +249,6 @@ class _ChatScreenState extends State<ChatScreen> {
           isError: isError,
           running: false,
         );
-        // Attach to last assistant message
         if (converted.isNotEmpty &&
             converted.last.role == MessageRole.assistant) {
           converted.last = converted.last.copyWith(
@@ -191,6 +259,8 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     setState(() => _messages.addAll(converted));
   }
+
+  // ── Event handling ───────────────────────────────────────────────────────
 
   void _handleEvent(Map<String, dynamic> event) {
     final type = event['type'] as String?;
@@ -353,26 +423,114 @@ class _ChatScreenState extends State<ChatScreen> {
     super.dispose();
   }
 
+  // ── Build ────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final modelLabel = _currentModel != null
         ? '${_currentModel!['name'] ?? _currentModel!['id']}'
             '${_currentThinkingLevel.isNotEmpty ? ' ($_currentThinkingLevel)' : ''}'
         : (_ready ? 'No model' : 'Loading...');
+
+    final branchDisplay = _isGitRepo && _gitBranch != null
+        ? ' 🌿 $_gitBranch'
+        : '';
 
     return Scaffold(
       appBar: AppBar(
         leading: IconButton(
           icon: const Icon(Icons.folder_open),
           tooltip: _client.cwd,
-          onPressed: _changeDirectory,
+          onPressed: _ready ? _changeDirectory : null,
         ),
-        title: const Text('Pi Pi'),
+        title: GestureDetector(
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => ProjectScreen(
+                currentCwd: _client.cwd,
+                onProjectSelected: (path) => _switchToDirectory(path),
+              ),
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('Pi Pi'),
+              const SizedBox(width: 8),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                    color: theme.colorScheme.outlineVariant,
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.folder,
+                        size: 12,
+                        color: theme.colorScheme.onSurfaceVariant),
+                    const SizedBox(width: 3),
+                    Text(
+                      _client.cwd.split('/').last,
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    if (branchDisplay.isNotEmpty) ...[
+                      const SizedBox(width: 6),
+                      Text(
+                        branchDisplay,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: theme.colorScheme.primary,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.folder_special_outlined),
+            tooltip: 'Projects',
+            onPressed: _ready
+                ? () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => ProjectScreen(
+                          currentCwd: _client.cwd,
+                          onProjectSelected: (path) {
+                            Navigator.of(context).pop();
+                            _switchToDirectory(path);
+                          },
+                        ),
+                      ),
+                    )
+                : null,
+          ),
           IconButton(
             icon: const Icon(Icons.history),
             tooltip: 'Session history',
             onPressed: _ready ? _showHistory : null,
+          ),
+          // Theme toggle
+          IconButton(
+            icon: Icon(
+              widget.appThemeState != null
+                  ? _themeIcon(theme.brightness)
+                  : Icons.dark_mode_outlined,
+            ),
+            tooltip: 'Toggle theme',
+            onPressed: _cycleTheme,
           ),
           if (_models.isNotEmpty)
             PopupMenuButton<Map<String, dynamic>>(
@@ -380,8 +538,7 @@ class _ChatScreenState extends State<ChatScreen> {
               icon: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(modelLabel,
-                      style: const TextStyle(fontSize: 12)),
+                  Text(modelLabel, style: const TextStyle(fontSize: 12)),
                   const SizedBox(width: 4),
                   const Icon(Icons.arrow_drop_down),
                 ],
@@ -441,24 +598,46 @@ class _ChatScreenState extends State<ChatScreen> {
       body: Column(
         children: [
           Expanded(
-            child: _messages.isEmpty
-                ? const Center(
-                    child: Text(
-                      'Send a message to start chatting with pi',
-                      style: TextStyle(color: Colors.white54),
-                    ),
-                  )
-                : ListView.builder(
-                    controller: _scrollController,
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    itemCount: _messages.length,
-                    itemBuilder: (context, index) {
-                      return _MessageBubble(
-                        message: _messages[index],
-                        isLast: index == _messages.length - 1,
-                      );
-                    },
-                  ),
+            child: Stack(
+              children: [
+                _messages.isEmpty
+                    ? Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.chat_bubble_outline,
+                                size: 48,
+                                color: theme.colorScheme.primary.withValues(alpha: 0.3)),
+                            const SizedBox(height: 16),
+                            Text(
+                              'Send a message to start chatting with pi',
+                              style: TextStyle(
+                                  color: theme.colorScheme.onSurface.withValues(alpha: 0.5)),
+                            ),
+                          ],
+                        ),
+                      )
+                    : ListView.builder(
+                        controller: _scrollController,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
+                        itemCount: _messages.length,
+                        itemBuilder: (context, index) {
+                          return _MessageBubble(
+                            message: _messages[index],
+                            isLast: index == _messages.length - 1,
+                          );
+                        },
+                      ),
+
+                // ── Corner overlay: CWD + git branch ─────────────────────
+                Positioned(
+                  left: 8,
+                  bottom: 8,
+                  child: _buildCornerOverlay(theme),
+                ),
+              ],
+            ),
           ),
           const Divider(height: 1),
           _InputBar(
@@ -466,6 +645,82 @@ class _ChatScreenState extends State<ChatScreen> {
             onSend: _sendMessage,
             enabled: _ready && !_agentRunning,
           ),
+        ],
+      ),
+    );
+  }
+
+  IconData _themeIcon(Brightness brightness) {
+    final state = widget.appThemeState;
+    if (state == null) return Icons.dark_mode_outlined;
+    switch (state.themeMode as ThemeMode) {
+      case ThemeMode.light:
+        return Icons.light_mode;
+      case ThemeMode.dark:
+        return Icons.dark_mode;
+      case ThemeMode.system:
+        return brightness == Brightness.dark
+            ? Icons.dark_mode
+            : Icons.light_mode;
+    }
+  }
+
+  Widget _buildCornerOverlay(ThemeData theme) {
+    final cwd = _client.cwd;
+    // Truncate long paths for display
+    final parts = cwd.split('/');
+    final displayPath = parts.length > 3
+        ? '…/${parts.sublist(parts.length - 2).join('/')}'
+        : cwd;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.85),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.5),
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.folder, size: 13, color: theme.colorScheme.primary),
+          const SizedBox(width: 4),
+          Flexible(
+            child: Tooltip(
+              message: cwd,
+              child: Text(
+                displayPath,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ),
+          if (_isGitRepo && _gitBranch != null) ...[
+            const SizedBox(width: 8),
+            Container(
+              width: 1,
+              height: 12,
+              color: theme.colorScheme.outlineVariant,
+            ),
+            const SizedBox(width: 8),
+            Icon(Icons.call_split,
+                size: 12, color: theme.colorScheme.primary),
+            const SizedBox(width: 3),
+            Text(
+              _gitBranch!,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: theme.colorScheme.primary,
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -508,9 +763,15 @@ class _MessageBubble extends StatelessWidget {
               margin: const EdgeInsets.only(bottom: 6),
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: Colors.grey.shade900,
+                color: Theme.of(context).brightness == Brightness.dark
+                    ? Colors.grey.shade900
+                    : Colors.grey.shade100,
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.grey.shade700),
+                border: Border.all(
+                  color: Theme.of(context).brightness == Brightness.dark
+                      ? Colors.grey.shade700
+                      : Colors.grey.shade300,
+                ),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -585,9 +846,15 @@ class _ToolCallWidget extends StatelessWidget {
       margin: const EdgeInsets.only(top: 6),
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: Colors.blueGrey.shade900,
+        color: Theme.of(context).brightness == Brightness.dark
+            ? Colors.blueGrey.shade900
+            : Colors.blueGrey.shade50,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Colors.blueGrey.shade700),
+        border: Border.all(
+          color: Theme.of(context).brightness == Brightness.dark
+              ? Colors.blueGrey.shade700
+              : Colors.blueGrey.shade200,
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -621,7 +888,9 @@ class _ToolCallWidget extends StatelessWidget {
                 toolCall.args,
                 style: TextStyle(
                     fontSize: 11,
-                    color: Colors.grey.shade400,
+                    color: Theme.of(context).brightness == Brightness.dark
+                        ? Colors.grey.shade400
+                        : Colors.grey.shade600,
                     fontFamily: 'monospace'),
                 maxLines: 3,
                 overflow: TextOverflow.ellipsis,
@@ -632,7 +901,9 @@ class _ToolCallWidget extends StatelessWidget {
               margin: const EdgeInsets.only(top: 6),
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
-                  color: Colors.black54,
+                  color: Theme.of(context).brightness == Brightness.dark
+                      ? Colors.black54
+                      : Colors.grey.shade100,
                   borderRadius: BorderRadius.circular(6)),
               child: Text(
                 toolCall.result!,
@@ -701,58 +972,6 @@ class _InputBar extends StatelessWidget {
   }
 }
 
-// ─── Directory Dialog ────────────────────────────────────────────────────────
-
-class _DirectoryDialog extends StatefulWidget {
-  final String initialPath;
-  const _DirectoryDialog({required this.initialPath});
-
-  @override
-  State<_DirectoryDialog> createState() => _DirectoryDialogState();
-}
-
-class _DirectoryDialogState extends State<_DirectoryDialog> {
-  late final TextEditingController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = TextEditingController(text: widget.initialPath);
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Working Directory'),
-      content: TextField(
-        controller: _controller,
-        autofocus: true,
-        decoration: const InputDecoration(
-          hintText: '/path/to/project',
-          border: OutlineInputBorder(),
-        ),
-        onSubmitted: (v) => Navigator.of(context).pop(v),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.of(context).pop(_controller.text),
-          child: const Text('Restart'),
-        ),
-      ],
-    );
-  }
-}
-
 // ─── History Sheet ───────────────────────────────────────────────────────────
 
 class _HistorySheet extends StatelessWidget {
@@ -761,6 +980,7 @@ class _HistorySheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return DraggableScrollableSheet(
       initialChildSize: 0.6,
       minChildSize: 0.3,
@@ -774,7 +994,7 @@ class _HistorySheet extends StatelessWidget {
               width: 36,
               height: 4,
               decoration: BoxDecoration(
-                color: Colors.grey.shade600,
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.3),
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
@@ -783,11 +1003,14 @@ class _HistorySheet extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
             child: Row(
               children: [
-                const Text('Session History',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                Text('Session History',
+                    style: TextStyle(
+                        fontSize: 18, fontWeight: FontWeight.bold)),
                 const Spacer(),
                 Text('${sessions.length} sessions',
-                    style: TextStyle(fontSize: 13, color: Colors.grey.shade500)),
+                    style: TextStyle(
+                        fontSize: 13,
+                        color: theme.colorScheme.onSurface.withValues(alpha: 0.5))),
               ],
             ),
           ),
@@ -802,7 +1025,8 @@ class _HistorySheet extends StatelessWidget {
                 final date = _formatDate(s.timestamp);
                 return ListTile(
                   leading: const Icon(Icons.chat_bubble_outline, size: 20),
-                  title: Text(s.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  title: Text(s.title,
+                      maxLines: 1, overflow: TextOverflow.ellipsis),
                   subtitle: Text(date, style: const TextStyle(fontSize: 12)),
                   onTap: () => Navigator.of(context).pop(s.path),
                 );
