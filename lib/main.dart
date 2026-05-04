@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
-import 'chat_screen.dart';
 import 'project_manager.dart';
+import 'shell_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -230,7 +230,7 @@ class MyAppState extends State<MyApp> {
       themeMode: _themeMode,
       theme: _buildLightTheme(),
       darkTheme: _buildDarkTheme(),
-      home: ChatScreen(
+      home: ShellScreen(
         initialCwd: widget.initialCwd,
         appThemeState: this,
       ),

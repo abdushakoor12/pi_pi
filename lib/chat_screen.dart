@@ -1,239 +1,57 @@
 import 'dart:convert';
-import 'dart:io';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-
 import 'package:flutter_markdown/flutter_markdown.dart';
 
 import 'chat_message.dart';
-import 'git_info.dart';
-import 'pi_rpc_client.dart';
-import 'project_manager.dart';
-import 'project_screen.dart';
 import 'session_manager.dart';
 
-class ChatScreen extends StatefulWidget {
-  /// Optional initial CWD to start pi in.
-  final String? initialCwd;
+/// The main chat content widget — messages list + input bar.
+///
+/// Designed to be embedded inside a shell layout (ShellScreen) rather than
+/// appearing as a standalone Scaffold. Use a GlobalKey<ChatContentState> to
+/// call [reset] and [loadSession].
+class ChatContent extends StatefulWidget {
+  /// The RPC client to send/receive messages.
+  final dynamic client;
 
-  /// The parent [MyAppState] so we can toggle the theme.
-  final dynamic appThemeState;
-
-  const ChatScreen({
-    super.key,
-    this.initialCwd,
-    this.appThemeState,
-  });
+  const ChatContent({super.key, required this.client});
 
   @override
-  State<ChatScreen> createState() => _ChatScreenState();
+  State<ChatContent> createState() => ChatContentState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
-  late final PiRpcClient _client;
+class ChatContentState extends State<ChatContent> {
   final List<ChatMessage> _messages = [];
   final _textController = TextEditingController();
   final _scrollController = ScrollController();
-  bool _ready = false;
   bool _agentRunning = false;
   int? _streamingIndex;
 
-  List<Map<String, dynamic>> _models = [];
-  Map<String, dynamic>? _currentModel;
-  String _currentThinkingLevel = '';
-
-  // Git info
-  String? _gitBranch;
-  bool _isGitRepo = false;
+  /// Whether there are any messages in the current conversation.
+  bool get hasMessages => _messages.isNotEmpty;
 
   @override
   void initState() {
     super.initState();
-    _client = PiRpcClient();
-    _initClient();
+    widget.client.events.listen(_handleEvent);
+    // Also listen for restart to clear messages
   }
 
-  Future<void> _initClient() async {
-    // If we have a persisted CWD, use it; otherwise fall back to current dir.
-    if (widget.initialCwd != null) {
-      _client.updateCwd(widget.initialCwd!);
-    }
-    await _client.start();
-    _client.events.listen(_handleEvent);
-    await _fetchModelsAndState();
-    await _updateGitInfo();
-    setState(() => _ready = true);
-  }
-
-  Future<void> _updateGitInfo() async {
-    final branch = await GitInfo.getBranch(_client.cwd);
-    final isRepo = await GitInfo.isGitRepo(_client.cwd);
-    if (mounted) {
-      setState(() {
-        _gitBranch = branch;
-        _isGitRepo = isRepo;
-      });
-    }
-  }
-
-  Future<void> _fetchModelsAndState() async {
-    final modelsRes = await _client.request({'type': 'get_available_models'});
-    final stateRes = await _client.request({'type': 'get_state'});
+  /// Clear all messages (start a new conversation).
+  void reset() {
     setState(() {
-      if (modelsRes?['success'] == true) {
-        _models = List<Map<String, dynamic>>.from(
-            modelsRes!['data']['models'] ?? []);
-      }
-      if (stateRes?['success'] == true) {
-        _currentModel = stateRes!['data']['model'] as Map<String, dynamic>?;
-        _currentThinkingLevel =
-            stateRes['data']['thinkingLevel'] as String? ?? '';
-      }
-    });
-  }
-
-  /// Open native directory picker, then restart pi in the chosen folder.
-  Future<void> _changeDirectory() async {
-    final picked = await FilePicker.platform.getDirectoryPath(
-      dialogTitle: 'Select working directory',
-      initialDirectory: _client.cwd,
-    );
-
-    if (picked == null || picked.trim().isEmpty) return;
-
-    final dir = Directory(picked.trim());
-    if (!await dir.exists()) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Directory does not exist')),
-        );
-      }
-      return;
-    }
-
-    await _switchToDirectory(dir.path);
-  }
-
-  /// Switch to a new working directory and restart pi.
-  Future<void> _switchToDirectory(String path) async {
-    setState(() => _ready = false);
-
-    // Persist the new CWD
-    await ProjectManager.setLastCwd(path);
-    _client.updateCwd(path);
-
-    await _client.restart(path);
-    await _fetchModelsAndState();
-    await _updateGitInfo();
-
-    setState(() => _ready = true);
-  }
-
-  Future<void> _selectModel(Map<String, dynamic> model) async {
-    final res = await _client.request({
-      'type': 'set_model',
-      'provider': model['provider'],
-      'modelId': model['id'],
-    });
-    if (res?['success'] == true && res!['data'] != null) {
-      setState(() => _currentModel = res['data'] as Map<String, dynamic>);
-    }
-  }
-
-  // ── Theme cycling ────────────────────────────────────────────────────────
-
-  void _cycleTheme() {
-    final state = widget.appThemeState;
-    if (state == null) return;
-    final current = state.themeMode as ThemeMode;
-    ThemeMode next;
-    switch (current) {
-      case ThemeMode.system:
-        next = ThemeMode.light;
-        break;
-      case ThemeMode.light:
-        next = ThemeMode.dark;
-        break;
-      case ThemeMode.dark:
-        next = ThemeMode.system;
-        break;
-    }
-    state.setThemeMode(next);
-  }
-
-  // ── New chat ────────────────────────────────────────────────────────────
-
-  Future<void> _newChat() async {
-    if (_messages.isNotEmpty) {
-      final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('Start a new chat?'),
-          content: const Text(
-            'The current conversation will be saved and available in session history.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('New Chat'),
-            ),
-          ],
-        ),
-      );
-      if (confirmed != true) return;
-    }
-
-    setState(() {
-      _ready = false;
       _messages.clear();
+      _streamingIndex = null;
+      _agentRunning = false;
     });
-
-    await _client.restart(_client.cwd);
-    await _fetchModelsAndState();
-    await _updateGitInfo();
-
-    if (mounted) setState(() => _ready = true);
   }
 
-  // ── Session history ──────────────────────────────────────────────────────
-
-  Future<void> _showHistory() async {
-    final sessions = await SessionManager.listSessions(_client.cwd);
-    if (!mounted) return;
-
-    if (sessions.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No previous sessions in this directory')),
-      );
-      return;
-    }
-
-    final chosen = await showModalBottomSheet<String>(
-      context: context,
-      builder: (ctx) => _HistorySheet(sessions: sessions),
-    );
-
-    if (chosen != null) {
-      await _loadSession(chosen);
-    }
-  }
-
-  Future<void> _loadSession(String path) async {
-    setState(() => _ready = false);
-    _messages.clear();
-
-    final raw = await SessionManager.loadMessages(path);
+  /// Load messages from a session file.
+  Future<void> loadSession(String sessionPath) async {
+    setState(() => _messages.clear());
+    final raw = await SessionManager.loadMessages(sessionPath);
     _convertAndShow(raw);
-
-    await _client.restart(_client.cwd, sessionPath: path);
-    await _fetchModelsAndState();
-
-    setState(() => _ready = true);
   }
 
   void _convertAndShow(List<Map<String, dynamic>> rawMessages) {
@@ -265,7 +83,8 @@ class _ChatScreenState extends State<ChatScreen> {
               if (block['type'] == 'text') {
                 text += block['text'] as String? ?? '';
               } else if (block['type'] == 'thinking') {
-                thinking = (thinking ?? '') + (block['thinking'] as String? ?? '');
+                thinking =
+                    (thinking ?? '') + (block['thinking'] as String? ?? '');
               }
             }
           }
@@ -300,7 +119,7 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() => _messages.addAll(converted));
   }
 
-  // ── Event handling ───────────────────────────────────────────────────────
+  // ── Event handling ─────────────────────────────────────────────────────
 
   void _handleEvent(Map<String, dynamic> event) {
     final type = event['type'] as String?;
@@ -314,7 +133,8 @@ class _ChatScreenState extends State<ChatScreen> {
           _finalizeStreaming();
         });
       case 'message_start':
-        final role = (event['message'] as Map<String, dynamic>?)?['role'] as String?;
+        final role =
+            (event['message'] as Map<String, dynamic>?)?['role'] as String?;
         if (role == 'assistant') {
           setState(() {
             _streamingIndex = _messages.length;
@@ -325,7 +145,8 @@ class _ChatScreenState extends State<ChatScreen> {
           });
         }
       case 'message_update':
-        _handleStreamingDelta(event['assistantMessageEvent'] as Map<String, dynamic>?);
+        _handleStreamingDelta(
+            event['assistantMessageEvent'] as Map<String, dynamic>?);
       case 'tool_execution_start':
         _handleToolStart(event);
       case 'tool_execution_update':
@@ -334,8 +155,8 @@ class _ChatScreenState extends State<ChatScreen> {
         _handleToolEnd(event);
       case 'turn_end':
         _finalizeStreaming();
-      case 'process_exit':
-        setState(() => _ready = false);
+      case 'process_restart':
+        setState(() => _messages.clear());
     }
     _scrollToBottom();
   }
@@ -355,11 +176,12 @@ class _ChatScreenState extends State<ChatScreen> {
         final thinking = (delta['delta'] as String?) ?? '';
         setState(() {
           _messages[_streamingIndex!] = _messages[_streamingIndex!].copyWith(
-              thinking: (_messages[_streamingIndex!].thinking ?? '') + thinking);
+              thinking:
+                  (_messages[_streamingIndex!].thinking ?? '') + thinking);
         });
       case 'toolcall_start':
-        final toolCall =
-            (delta['partial'] as Map<String, dynamic>?)?['toolCall'] as Map<String, dynamic>?;
+        final toolCall = (delta['partial'] as Map<String, dynamic>?)
+                ?['toolCall'] as Map<String, dynamic>?;
         if (toolCall != null) {
           setState(() {
             _messages[_streamingIndex!] = _messages[_streamingIndex!].copyWith(
@@ -376,12 +198,12 @@ class _ChatScreenState extends State<ChatScreen> {
           });
         }
       case 'toolcall_end':
-        final toolCall =
-            (delta['partial'] as Map<String, dynamic>?)?['toolCall'] as Map<String, dynamic>?;
+        final toolCall = (delta['partial'] as Map<String, dynamic>?)
+                ?['toolCall'] as Map<String, dynamic>?;
         if (toolCall != null) {
           final id = toolCall['id'] as String? ?? '';
-          _updateToolCall(
-              id, (tc) => tc.copyWith(args: jsonEncode(toolCall['arguments'] ?? {})));
+          _updateToolCall(id,
+              (tc) => tc.copyWith(args: jsonEncode(toolCall['arguments'] ?? {})));
         }
     }
   }
@@ -393,7 +215,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _handleToolUpdate(Map<String, dynamic> event) {
     final id = event['toolCallId'] as String?;
-    final content = (event['partialResult'] as Map<String, dynamic>?)?['content'] as List?;
+    final content =
+        (event['partialResult'] as Map<String, dynamic>?)?['content'] as List?;
     final text = content?.isNotEmpty == true
         ? (content!.first as Map)['text'] ?? ''
         : '';
@@ -404,14 +227,15 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _handleToolEnd(Map<String, dynamic> event) {
     final id = event['toolCallId'] as String?;
-    final content = (event['result'] as Map<String, dynamic>?)?['content'] as List?;
+    final content =
+        (event['result'] as Map<String, dynamic>?)?['content'] as List?;
     final text = content?.isNotEmpty == true
         ? (content!.first as Map)['text'] ?? ''
         : '';
     final isError = event['isError'] as bool? ?? false;
     if (id != null) {
-      _updateToolCall(
-          id, (tc) => tc.copyWith(result: text.toString(), isError: isError, running: false));
+      _updateToolCall(id,
+          (tc) => tc.copyWith(result: text.toString(), isError: isError, running: false));
     }
   }
 
@@ -439,7 +263,7 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() {
       _messages.add(ChatMessage(role: MessageRole.user, text: text));
     });
-    _client.send({'type': 'prompt', 'message': text});
+    widget.client.send({'type': 'prompt', 'message': text});
     _textController.clear();
   }
 
@@ -457,325 +281,66 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
-    _client.dispose();
     _textController.dispose();
     _scrollController.dispose();
     super.dispose();
   }
 
-  // ── Build ────────────────────────────────────────────────────────────────
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final modelLabel = _currentModel != null
-        ? '${_currentModel!['name'] ?? _currentModel!['id']}'
-            '${_currentThinkingLevel.isNotEmpty ? ' ($_currentThinkingLevel)' : ''}'
-        : (_ready ? 'No model' : 'Loading...');
+    final cs = theme.colorScheme;
 
-    final branchDisplay = _isGitRepo && _gitBranch != null
-        ? ' 🌿 $_gitBranch'
-        : '';
-
-    return Scaffold(
-      appBar: AppBar(
-        leading: IconButton(
-          icon: const Icon(Icons.folder_open),
-          tooltip: _client.cwd,
-          onPressed: _ready ? _changeDirectory : null,
-        ),
-        title: GestureDetector(
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => ProjectScreen(
-                currentCwd: _client.cwd,
-                onProjectSelected: (path) => _switchToDirectory(path),
-              ),
-            ),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text('Pi Pi'),
-              const SizedBox(width: 8),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(
-                    color: theme.colorScheme.outlineVariant,
-                  ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.folder,
-                        size: 12,
-                        color: theme.colorScheme.onSurfaceVariant),
-                    const SizedBox(width: 3),
-                    Text(
-                      _client.cwd.split('/').last,
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w500,
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                    if (branchDisplay.isNotEmpty) ...[
-                      const SizedBox(width: 6),
+    return Column(
+      children: [
+        Expanded(
+          child: _messages.isEmpty
+              ? Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.chat_bubble_outline,
+                          size: 48,
+                          color: cs.primary.withValues(alpha: 0.2)),
+                      const SizedBox(height: 16),
                       Text(
-                        branchDisplay,
+                        'Send a message to start chatting with pi',
                         style: TextStyle(
-                          fontSize: 11,
-                          color: theme.colorScheme.primary,
+                          fontSize: 14,
+                          color: cs.onSurface.withValues(alpha: 0.4),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Use the sidebar to switch projects or browse history',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: cs.onSurface.withValues(alpha: 0.25),
                         ),
                       ),
                     ],
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.folder_special_outlined),
-            tooltip: 'Projects',
-            onPressed: _ready
-                ? () => Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => ProjectScreen(
-                          currentCwd: _client.cwd,
-                          onProjectSelected: (path) {
-                            Navigator.of(context).pop();
-                            _switchToDirectory(path);
-                          },
-                        ),
-                      ),
-                    )
-                : null,
-          ),
-          IconButton(
-            icon: const Icon(Icons.add_comment_outlined),
-            tooltip: 'New chat',
-            onPressed: _ready ? _newChat : null,
-          ),
-          IconButton(
-            icon: const Icon(Icons.history),
-            tooltip: 'Session history',
-            onPressed: _ready ? _showHistory : null,
-          ),
-          // Theme toggle
-          IconButton(
-            icon: Icon(
-              widget.appThemeState != null
-                  ? _themeIcon(theme.brightness)
-                  : Icons.dark_mode_outlined,
-            ),
-            tooltip: 'Toggle theme',
-            onPressed: _cycleTheme,
-          ),
-          if (_models.isNotEmpty)
-            PopupMenuButton<Map<String, dynamic>>(
-              tooltip: 'Select model',
-              icon: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(modelLabel, style: const TextStyle(fontSize: 12)),
-                  const SizedBox(width: 4),
-                  const Icon(Icons.arrow_drop_down),
-                ],
-              ),
-              onSelected: _selectModel,
-              itemBuilder: (ctx) {
-                final popupCs = Theme.of(ctx).colorScheme;
-                return _models.map((m) {
-                  final isSelected = _currentModel != null &&
-                      m['provider'] == _currentModel!['provider'] &&
-                      m['id'] == _currentModel!['id'];
-                  return PopupMenuItem<Map<String, dynamic>>(
-                    value: m,
-                    child: Row(
-                      children: [
-                        Icon(
-                          isSelected
-                              ? Icons.check_circle
-                              : Icons.circle_outlined,
-                          size: 16,
-                          color: isSelected
-                              ? popupCs.tertiary
-                              : popupCs.onSurfaceVariant,
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            m['name'] as String? ?? m['id'] as String? ?? '',
-                            style: TextStyle(
-                              fontWeight: isSelected
-                                  ? FontWeight.bold
-                                  : FontWeight.normal,
-                            ),
-                          ),
-                        ),
-                        Text(
-                          m['provider'] as String? ?? '',
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: popupCs.onSurfaceVariant,
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                }).toList();
-              },
-            ),
-          if (_agentRunning)
-            Padding(
-              padding: const EdgeInsets.only(right: 12),
-              child: Center(
-                child: SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: theme.colorScheme.primary,
                   ),
+                )
+              : ListView.builder(
+                  controller: _scrollController,
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 24, vertical: 16),
+                  itemCount: _messages.length,
+                  itemBuilder: (context, index) {
+                    return _MessageBubble(
+                      message: _messages[index],
+                      isLast: index == _messages.length - 1,
+                    );
+                  },
                 ),
-              ),
-            ),
-        ],
-      ),
-      body: Column(
-        children: [
-          Expanded(
-            child: Stack(
-              children: [
-                _messages.isEmpty
-                    ? Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.chat_bubble_outline,
-                                size: 48,
-                                color: theme.colorScheme.primary.withValues(alpha: 0.3)),
-                            const SizedBox(height: 16),
-                            Text(
-                              'Send a message to start chatting with pi',
-                              style: TextStyle(
-                                  color: theme.colorScheme.onSurface.withValues(alpha: 0.5)),
-                            ),
-                          ],
-                        ),
-                      )
-                    : ListView.builder(
-                        controller: _scrollController,
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 8),
-                        itemCount: _messages.length,
-                        itemBuilder: (context, index) {
-                          return _MessageBubble(
-                            message: _messages[index],
-                            isLast: index == _messages.length - 1,
-                          );
-                        },
-                      ),
-
-                // ── Corner overlay: CWD + git branch ─────────────────────
-                Positioned(
-                  left: 8,
-                  bottom: 8,
-                  child: _buildCornerOverlay(theme),
-                ),
-              ],
-            ),
-          ),
-          const Divider(height: 1),
-          _InputBar(
-            controller: _textController,
-            onSend: _sendMessage,
-            enabled: _ready && !_agentRunning,
-          ),
-        ],
-      ),
-    );
-  }
-
-  IconData _themeIcon(Brightness brightness) {
-    final state = widget.appThemeState;
-    if (state == null) return Icons.dark_mode_outlined;
-    switch (state.themeMode as ThemeMode) {
-      case ThemeMode.light:
-        return Icons.light_mode;
-      case ThemeMode.dark:
-        return Icons.dark_mode;
-      case ThemeMode.system:
-        return brightness == Brightness.dark
-            ? Icons.dark_mode
-            : Icons.light_mode;
-    }
-  }
-
-  Widget _buildCornerOverlay(ThemeData theme) {
-    final cwd = _client.cwd;
-    // Truncate long paths for display
-    final parts = cwd.split('/');
-    final displayPath = parts.length > 3
-        ? '…/${parts.sublist(parts.length - 2).join('/')}'
-        : cwd;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.85),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.5),
         ),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.folder, size: 13, color: theme.colorScheme.primary),
-          const SizedBox(width: 4),
-          Flexible(
-            child: Tooltip(
-              message: cwd,
-              child: Text(
-                displayPath,
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w500,
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ),
-          if (_isGitRepo && _gitBranch != null) ...[
-            const SizedBox(width: 8),
-            Container(
-              width: 1,
-              height: 12,
-              color: theme.colorScheme.outlineVariant,
-            ),
-            const SizedBox(width: 8),
-            Icon(Icons.call_split,
-                size: 12, color: theme.colorScheme.primary),
-            const SizedBox(width: 3),
-            Text(
-              _gitBranch!,
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                color: theme.colorScheme.primary,
-              ),
-            ),
-          ],
-        ],
-      ),
+        const Divider(height: 1),
+        _InputBar(
+          controller: _textController,
+          onSend: _sendMessage,
+          enabled: !_agentRunning,
+        ),
+      ],
     );
   }
 }
@@ -847,7 +412,7 @@ class _MessageBubble extends StatelessWidget {
           if (message.text.isNotEmpty || message.role == MessageRole.assistant)
             Container(
               constraints: BoxConstraints(
-                  maxWidth: MediaQuery.of(context).size.width * 0.85),
+                  maxWidth: MediaQuery.of(context).size.width * 0.8),
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(
                 color: color,
@@ -891,15 +456,19 @@ class _MessageBubble extends StatelessWidget {
                               code: TextStyle(
                                 fontSize: 13,
                                 fontFamily: 'monospace',
-                                color: Theme.of(context).brightness == Brightness.dark
-                                    ? const Color(0xFFE6DB74)
-                                    : const Color(0xFF4A4A4A),
-                                backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                                color:
+                                    Theme.of(context).brightness == Brightness.dark
+                                        ? const Color(0xFFE6DB74)
+                                        : const Color(0xFF4A4A4A),
+                                backgroundColor: Theme.of(context)
+                                    .colorScheme
+                                    .surfaceContainerHighest,
                               ),
                               codeblockDecoration: BoxDecoration(
-                                color: Theme.of(context).brightness == Brightness.dark
-                                    ? Colors.grey.shade900
-                                    : Colors.grey.shade100,
+                                color:
+                                    Theme.of(context).brightness == Brightness.dark
+                                        ? Colors.grey.shade900
+                                        : Colors.grey.shade100,
                                 borderRadius: BorderRadius.circular(8),
                                 border: Border.all(
                                   color: Theme.of(context).brightness == Brightness.dark
@@ -907,18 +476,23 @@ class _MessageBubble extends StatelessWidget {
                                       : Colors.grey.shade300,
                                 ),
                               ),
-
                               blockquoteDecoration: BoxDecoration(
                                 border: Border(
                                   left: BorderSide(
-                                    color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.4),
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .primary
+                                        .withValues(alpha: 0.4),
                                     width: 3,
                                   ),
                                 ),
                               ),
                               blockquote: TextStyle(
                                 fontStyle: FontStyle.italic,
-                                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurface
+                                    .withValues(alpha: 0.7),
                               ),
                               listBullet: TextStyle(
                                 fontSize: 14,
@@ -928,7 +502,9 @@ class _MessageBubble extends StatelessWidget {
                                 border: Border(
                                   top: BorderSide(
                                     width: 1,
-                                    color: Theme.of(context).colorScheme.outlineVariant,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .outlineVariant,
                                   ),
                                 ),
                               ),
@@ -943,10 +519,15 @@ class _MessageBubble extends StatelessWidget {
                               ),
                               del: TextStyle(
                                 decoration: TextDecoration.lineThrough,
-                                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurface
+                                    .withValues(alpha: 0.5),
                               ),
                               tableBorder: TableBorder.all(
-                                color: Theme.of(context).colorScheme.outlineVariant,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .outlineVariant,
                                 width: 1,
                               ),
                               tableHead: TextStyle(
@@ -1085,7 +666,7 @@ class _InputBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.fromLTRB(12, 8, 8, 12),
+      padding: const EdgeInsets.fromLTRB(24, 12, 16, 16),
       color: Theme.of(context).colorScheme.surface,
       child: Row(
         children: [
@@ -1108,86 +689,5 @@ class _InputBar extends StatelessWidget {
         ],
       ),
     );
-  }
-}
-
-// ─── History Sheet ───────────────────────────────────────────────────────────
-
-class _HistorySheet extends StatelessWidget {
-  final List<SessionSummary> sessions;
-  const _HistorySheet({required this.sessions});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return DraggableScrollableSheet(
-      initialChildSize: 0.6,
-      minChildSize: 0.3,
-      maxChildSize: 0.9,
-      expand: false,
-      builder: (context, scrollController) => Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            child: Container(
-              width: 36,
-              height: 4,
-              decoration: BoxDecoration(
-                color: theme.colorScheme.onSurface.withValues(alpha: 0.3),
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            child: Row(
-              children: [
-                Text('Session History',
-                    style: TextStyle(
-                        fontSize: 18, fontWeight: FontWeight.bold)),
-                const Spacer(),
-                Text('${sessions.length} sessions',
-                    style: TextStyle(
-                        fontSize: 13,
-                        color: theme.colorScheme.onSurface.withValues(alpha: 0.5))),
-              ],
-            ),
-          ),
-          const Divider(),
-          Expanded(
-            child: ListView.separated(
-              controller: scrollController,
-              itemCount: sessions.length,
-              separatorBuilder: (context, index) => const Divider(height: 1),
-              itemBuilder: (context, index) {
-                final s = sessions[index];
-                final date = _formatDate(s.timestamp);
-                return ListTile(
-                  leading: const Icon(Icons.chat_bubble_outline, size: 20),
-                  title: Text(s.title,
-                      maxLines: 1, overflow: TextOverflow.ellipsis),
-                  subtitle: Text(date, style: const TextStyle(fontSize: 12)),
-                  onTap: () => Navigator.of(context).pop(s.path),
-                );
-              },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _formatDate(String iso) {
-    try {
-      final dt = DateTime.parse(iso).toLocal();
-      final now = DateTime.now();
-      if (dt.year == now.year && dt.month == now.month && dt.day == now.day) {
-        return 'Today ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
-      }
-      return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} '
-          '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
-    } catch (_) {
-      return iso;
-    }
   }
 }
