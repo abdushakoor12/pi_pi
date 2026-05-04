@@ -544,51 +544,59 @@ class _ChatScreenState extends State<ChatScreen> {
                 ],
               ),
               onSelected: _selectModel,
-              itemBuilder: (context) => _models.map((m) {
-                final isSelected = _currentModel != null &&
-                    m['provider'] == _currentModel!['provider'] &&
-                    m['id'] == _currentModel!['id'];
-                return PopupMenuItem<Map<String, dynamic>>(
-                  value: m,
-                  child: Row(
-                    children: [
-                      Icon(
-                        isSelected ? Icons.check_circle : Icons.circle_outlined,
-                        size: 16,
-                        color: isSelected ? Colors.greenAccent : Colors.grey,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          m['name'] as String? ?? m['id'] as String? ?? '',
-                          style: TextStyle(
-                            fontWeight:
-                                isSelected ? FontWeight.bold : FontWeight.normal,
+              itemBuilder: (ctx) {
+                final popupCs = Theme.of(ctx).colorScheme;
+                return _models.map((m) {
+                  final isSelected = _currentModel != null &&
+                      m['provider'] == _currentModel!['provider'] &&
+                      m['id'] == _currentModel!['id'];
+                  return PopupMenuItem<Map<String, dynamic>>(
+                    value: m,
+                    child: Row(
+                      children: [
+                        Icon(
+                          isSelected
+                              ? Icons.check_circle
+                              : Icons.circle_outlined,
+                          size: 16,
+                          color: isSelected
+                              ? popupCs.tertiary
+                              : popupCs.onSurfaceVariant,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            m['name'] as String? ?? m['id'] as String? ?? '',
+                            style: TextStyle(
+                              fontWeight: isSelected
+                                  ? FontWeight.bold
+                                  : FontWeight.normal,
+                            ),
                           ),
                         ),
-                      ),
-                      Text(
-                        m['provider'] as String? ?? '',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: Colors.grey.shade500,
+                        Text(
+                          m['provider'] as String? ?? '',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: popupCs.onSurfaceVariant,
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
-                );
-              }).toList(),
+                      ],
+                    ),
+                  );
+                }).toList();
+              },
             ),
           if (_agentRunning)
-            const Padding(
-              padding: EdgeInsets.only(right: 12),
+            Padding(
+              padding: const EdgeInsets.only(right: 12),
               child: Center(
                 child: SizedBox(
                   width: 16,
                   height: 16,
                   child: CircularProgressIndicator(
                     strokeWidth: 2,
-                    color: Colors.white70,
+                    color: theme.colorScheme.primary,
                   ),
                 ),
               ),
@@ -951,13 +959,6 @@ class _InputBar extends StatelessWidget {
               style: const TextStyle(fontSize: 14),
               decoration: InputDecoration(
                 hintText: enabled ? 'Ask pi something...' : 'Please wait...',
-                border:
-                    OutlineInputBorder(borderRadius: BorderRadius.circular(24)),
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                filled: true,
-                fillColor:
-                    Theme.of(context).colorScheme.surfaceContainerHighest,
               ),
             ),
           ),
