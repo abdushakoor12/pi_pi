@@ -47,11 +47,13 @@ class _SidebarPanelState extends State<SidebarPanel>
   late TabController _tabController;
   List<String> _projects = [];
   List<SessionSummary> _sessions = [];
+  String? _lastCwd;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+    _lastCwd = widget.client.cwd;
     _loadProjects();
     _loadSessions();
   }
@@ -59,7 +61,8 @@ class _SidebarPanelState extends State<SidebarPanel>
   @override
   void didUpdateWidget(SidebarPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.client.cwd != widget.client.cwd) {
+    if (widget.client.cwd != _lastCwd) {
+      _lastCwd = widget.client.cwd;
       _loadProjects();
       _loadSessions();
     }
