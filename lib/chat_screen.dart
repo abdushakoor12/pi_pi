@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import 'chat_message.dart';
 import 'pi_rpc_client.dart';
+import 'session_manager.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -88,6 +89,107 @@ class _ChatScreenState extends State<ChatScreen> {
     if (res?['success'] == true && res!['data'] != null) {
       setState(() => _currentModel = res['data'] as Map<String, dynamic>);
     }
+  }
+
+  Future<void> _showHistory() async {
+    final sessions = await SessionManager.listSessions(_client.cwd);
+    if (!mounted) return;
+
+    if (sessions.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No previous sessions in this directory')),
+      );
+      return;
+    }
+
+    final chosen = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => _HistorySheet(sessions: sessions),
+    );
+
+    if (chosen != null) {
+      await _loadSession(chosen);
+    }
+  }
+
+  Future<void> _loadSession(String path) async {
+    setState(() => _ready = false);
+    _messages.clear();
+
+    // 1. Parse the session file locally and display messages
+    final raw = await SessionManager.loadMessages(path);
+    _convertAndShow(raw);
+
+    // 2. Restart pi attached to this session so future prompts continue from it
+    await _client.restart(_client.cwd, sessionPath: path);
+    await _fetchModelsAndState();
+
+    setState(() => _ready = true);
+  }
+
+  void _convertAndShow(List<Map<String, dynamic>> rawMessages) {
+    final converted = <ChatMessage>[];
+    for (final entry in rawMessages) {
+      final msg = entry['message'] as Map<String, dynamic>?;
+      if (msg == null) continue;
+      final role = msg['role'] as String?;
+      final content = msg['content'];
+
+      if (role == 'user') {
+        String text = '';
+        if (content is List) {
+          for (final block in content) {
+            if (block is Map && block['type'] == 'text') {
+              text += block['text'] as String? ?? '';
+            }
+          }
+        } else if (content is String) {
+          text = content;
+        }
+        converted.add(ChatMessage(role: MessageRole.user, text: text));
+      } else if (role == 'assistant') {
+        String text = '';
+        String? thinking;
+        if (content is List) {
+          for (final block in content) {
+            if (block is Map) {
+              if (block['type'] == 'text') {
+                text += block['text'] as String? ?? '';
+              } else if (block['type'] == 'thinking') {
+                thinking = (thinking ?? '') + (block['thinking'] as String? ?? '');
+              }
+            }
+          }
+        }
+        converted.add(ChatMessage(
+          role: MessageRole.assistant,
+          text: text,
+          thinking: thinking,
+        ));
+      } else if (role == 'toolResult') {
+        final toolName = msg['toolName'] as String? ?? '';
+        final isError = msg['isError'] as bool? ?? false;
+        String resultText = '';
+        if (content is List && content.isNotEmpty) {
+          resultText = (content.first as Map)['text'] as String? ?? '';
+        }
+        final tc = ToolCall(
+          id: msg['toolCallId'] as String? ?? '',
+          name: toolName,
+          result: resultText,
+          isError: isError,
+          running: false,
+        );
+        // Attach to last assistant message
+        if (converted.isNotEmpty &&
+            converted.last.role == MessageRole.assistant) {
+          converted.last = converted.last.copyWith(
+            toolCalls: [...converted.last.toolCalls, tc],
+          );
+        }
+      }
+    }
+    setState(() => _messages.addAll(converted));
   }
 
   void _handleEvent(Map<String, dynamic> event) {
@@ -267,6 +369,11 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
         title: const Text('Pi Pi'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.history),
+            tooltip: 'Session history',
+            onPressed: _ready ? _showHistory : null,
+          ),
           if (_models.isNotEmpty)
             PopupMenuButton<Map<String, dynamic>>(
               tooltip: 'Select model',
@@ -643,5 +750,81 @@ class _DirectoryDialogState extends State<_DirectoryDialog> {
         ),
       ],
     );
+  }
+}
+
+// ─── History Sheet ───────────────────────────────────────────────────────────
+
+class _HistorySheet extends StatelessWidget {
+  final List<SessionSummary> sessions;
+  const _HistorySheet({required this.sessions});
+
+  @override
+  Widget build(BuildContext context) {
+    return DraggableScrollableSheet(
+      initialChildSize: 0.6,
+      minChildSize: 0.3,
+      maxChildSize: 0.9,
+      expand: false,
+      builder: (context, scrollController) => Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey.shade600,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Row(
+              children: [
+                const Text('Session History',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                const Spacer(),
+                Text('${sessions.length} sessions',
+                    style: TextStyle(fontSize: 13, color: Colors.grey.shade500)),
+              ],
+            ),
+          ),
+          const Divider(),
+          Expanded(
+            child: ListView.separated(
+              controller: scrollController,
+              itemCount: sessions.length,
+              separatorBuilder: (context, index) => const Divider(height: 1),
+              itemBuilder: (context, index) {
+                final s = sessions[index];
+                final date = _formatDate(s.timestamp);
+                return ListTile(
+                  leading: const Icon(Icons.chat_bubble_outline, size: 20),
+                  title: Text(s.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  subtitle: Text(date, style: const TextStyle(fontSize: 12)),
+                  onTap: () => Navigator.of(context).pop(s.path),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatDate(String iso) {
+    try {
+      final dt = DateTime.parse(iso).toLocal();
+      final now = DateTime.now();
+      if (dt.year == now.year && dt.month == now.month && dt.day == now.day) {
+        return 'Today ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+      }
+      return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} '
+          '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+    } catch (_) {
+      return iso;
+    }
   }
 }

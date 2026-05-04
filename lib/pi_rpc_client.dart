@@ -9,8 +9,10 @@ class PiRpcClient {
   int _reqId = 0;
   bool _disposed = false;
   String _cwd = Directory.current.path;
+  String? _sessionPath;
 
   String get cwd => _cwd;
+  String? get sessionPath => _sessionPath;
 
   final _eventController = StreamController<Map<String, dynamic>>.broadcast();
   Stream<Map<String, dynamic>> get events => _eventController.stream;
@@ -19,15 +21,23 @@ class PiRpcClient {
       StreamController<Map<String, dynamic>>.broadcast();
   Stream<Map<String, dynamic>> get responses => _responseController.stream;
 
-  Future<void> start({String? workingDirectory}) async {
+  Future<void> start({String? workingDirectory, String? sessionPath}) async {
     _cwd = workingDirectory ?? Directory.current.path;
+    _sessionPath = sessionPath;
     await _spawn();
   }
 
   Future<void> _spawn() async {
+    final args = ['--mode', 'rpc'];
+    if (_sessionPath != null) {
+      args.addAll(['--session', _sessionPath!]);
+    } else {
+      args.add('--no-session');
+    }
+
     _process = await Process.start(
       'pi',
-      ['--mode', 'rpc', '--no-session'],
+      args,
       workingDirectory: _cwd,
       mode: ProcessStartMode.normal,
     );
@@ -61,8 +71,9 @@ class PiRpcClient {
     });
   }
 
-  Future<void> restart(String workingDirectory) async {
+  Future<void> restart(String workingDirectory, {String? sessionPath}) async {
     _cwd = workingDirectory;
+    _sessionPath = sessionPath;
     _process?.kill();
     await _spawn();
     _eventController.add({'type': 'process_restart'});
