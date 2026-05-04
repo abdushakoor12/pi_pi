@@ -113,6 +113,21 @@ class PiRpcClient {
     return completer.future;
   }
 
+  /// Send an abort command to stop the current agent operation.
+  void abort() {
+    send({'type': 'abort'});
+  }
+
+  /// Send an abort_bash command to stop a running bash command.
+  void abortBash() {
+    send({'type': 'abort_bash'});
+  }
+
+  /// Send an abort_retry command to stop an in-progress retry.
+  void abortRetry() {
+    send({'type': 'abort_retry'});
+  }
+
   Future<void> dispose() async {
     _disposed = true;
     await _eventController.close();

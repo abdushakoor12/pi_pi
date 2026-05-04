@@ -205,6 +205,26 @@ class ChatContentState extends State<ChatContent> {
           _updateToolCall(id,
               (tc) => tc.copyWith(args: jsonEncode(toolCall['arguments'] ?? {})));
         }
+      case 'error':
+        // Agent was aborted or an error occurred
+        final reason = delta['reason'] as String?;
+        if (reason == 'aborted') {
+          setState(() {
+            // Mark all running tool calls as stopped
+            if (_streamingIndex != null &&
+                _streamingIndex! < _messages.length) {
+              _messages[_streamingIndex!] = _messages[_streamingIndex!]
+                  .copyWith(
+                    isStreaming: false,
+                    toolCalls: _messages[_streamingIndex!]
+                        .toolCalls
+                        .map((tc) =>
+                            tc.running ? tc.copyWith(running: false) : tc)
+                        .toList(),
+                  );
+            }
+          });
+        }
     }
   }
 
@@ -339,6 +359,7 @@ class ChatContentState extends State<ChatContent> {
           controller: _textController,
           onSend: _sendMessage,
           enabled: !_agentRunning,
+          onStop: () => widget.client.abort(),
         ),
       ],
     );
@@ -656,36 +677,51 @@ class _InputBar extends StatelessWidget {
   final TextEditingController controller;
   final ValueChanged<String> onSend;
   final bool enabled;
+  final VoidCallback? onStop;
 
   const _InputBar({
     required this.controller,
     required this.onSend,
     required this.enabled,
+    this.onStop,
   });
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
     return Container(
       padding: const EdgeInsets.fromLTRB(24, 12, 16, 16),
-      color: Theme.of(context).colorScheme.surface,
+      color: cs.surface,
       child: Row(
         children: [
           Expanded(
             child: TextField(
               controller: controller,
               enabled: enabled,
-              onSubmitted: onSend,
+              onSubmitted: enabled ? onSend : null,
               style: const TextStyle(fontSize: 14),
               decoration: InputDecoration(
-                hintText: enabled ? 'Ask pi something...' : 'Please wait...',
+                hintText: enabled ? 'Ask pi something...' : 'pi is running...',
               ),
             ),
           ),
           const SizedBox(width: 8),
-          IconButton.filled(
-            onPressed: enabled ? () => onSend(controller.text) : null,
-            icon: const Icon(Icons.send),
-          ),
+          if (enabled)
+            IconButton.filled(
+              onPressed: () => onSend(controller.text),
+              icon: const Icon(Icons.send),
+            )
+          else
+            IconButton.filled(
+              onPressed: onStop,
+              icon: const Icon(Icons.stop),
+              style: IconButton.styleFrom(
+                backgroundColor: cs.error,
+                foregroundColor: cs.onError,
+              ),
+              tooltip: 'Stop',
+            ),
         ],
       ),
     );
