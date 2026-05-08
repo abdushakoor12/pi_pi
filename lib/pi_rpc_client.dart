@@ -74,14 +74,12 @@ class PiRpcClient {
   int _reqId = 0;
   bool _disposed = false;
   String _cwd = Directory.current.path;
-  String? _sessionPath;
 
   _JsonlReader? _stdoutReader;
   StreamSubscription<String>? _stdoutSub;
   StreamSubscription<String>? _stderrSub;
 
   String get cwd => _cwd;
-  String? get sessionPath => _sessionPath;
   bool get isRunning => _process != null;
 
   // ── Streams ────────────────────────────────────────────────────────────────
@@ -106,19 +104,15 @@ class PiRpcClient {
     _cwd = path;
   }
 
-  Future<void> start({String? workingDirectory, String? sessionPath}) async {
+  Future<void> start({String? workingDirectory}) async {
     _cwd = workingDirectory ?? Directory.current.path;
-    _sessionPath = sessionPath;
     await _spawn();
   }
 
   Future<void> _spawn() async {
-    final args = ['--mode', 'rpc'];
-    if (_sessionPath != null) {
-      args.addAll(['--session', _sessionPath!]);
-    } else {
-      args.add('--no-session');
-    }
+    // Per the RPC spec, session management is done via RPC commands
+    // (new_session, switch_session), not CLI flags.
+    final args = ['--mode', 'rpc', '--no-session'];
 
     _process = await Process.start(
       'pi',
@@ -175,10 +169,9 @@ class PiRpcClient {
     }
   }
 
-  /// Restart the pi process with a new working directory and optional session.
-  Future<void> restart(String workingDirectory, {String? sessionPath}) async {
+  /// Restart the pi process with a new working directory.
+  Future<void> restart(String workingDirectory) async {
     _cwd = workingDirectory;
-    _sessionPath = sessionPath;
     await _cleanupProcess();
     await _spawn();
     _eventController.add(ProcessRestartEvent());

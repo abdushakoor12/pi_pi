@@ -1,10 +1,12 @@
 import 'dart:convert';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
 import 'agent_state_manager.dart';
 import 'chat_message.dart';
+import 'extension_ui_dialogs.dart';
 import 'models.dart';
 import 'pi_rpc_client.dart';
 import 'session_manager.dart';
@@ -56,7 +58,12 @@ class ChatContentState extends State<ChatContent> {
   void _onStateChange() {
     final req = widget.stateManager.extensionUiRequest;
     if (req != null && mounted) {
-      _showExtensionDialog(req);
+      ExtensionUiDialogs.show(
+        context,
+        req,
+        widget.client,
+        onDismissed: () => widget.stateManager.clearUiRequest(),
+      );
     }
   }
 
@@ -400,177 +407,41 @@ class ChatContentState extends State<ChatContent> {
   }
 
   Future<void> _pickImages() async {
-    // Simple file picker for images
-    // In a real implementation, use file_picker with allowMultiple: true
-    // For now, placeholder — images can be added via drag/drop or paste
-    // in a more complete implementation.
-  }
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['jpg', 'jpeg', 'png', 'gif', 'webp'],
+        allowMultiple: true,
+      );
+      if (result == null || result.files.isEmpty) return;
 
-  // ── Extension UI dialogs ─────────────────────────────────────────────────
+      for (final file in result.files) {
+        final bytes = file.bytes;
+        if (bytes == null) continue;
 
-  void _showExtensionDialog(ExtensionUiRequest req) {
-    switch (req) {
-      case SelectRequest s:
-        _showSelectDialog(s);
-      case ConfirmRequest c:
-        _showConfirmDialog(c);
-      case InputRequest i:
-        _showInputDialog(i);
-      case EditorRequest e:
-        _showEditorDialog(e);
-      default:
-        // Unknown — auto-dismiss
-        widget.stateManager.dismissUiRequest();
+        final mimeType = switch (file.extension?.toLowerCase()) {
+          'jpg' || 'jpeg' => 'image/jpeg',
+          'png' => 'image/png',
+          'gif' => 'image/gif',
+          'webp' => 'image/webp',
+          _ => 'image/png',
+        };
+
+        final base64Data = base64Encode(bytes);
+        setState(() {
+          _pendingImages.add(ImageContent(
+            data: base64Data,
+            mimeType: mimeType,
+          ));
+        });
+      }
+    } catch (e) {
+      debugPrint('[pickImages error] $e');
     }
   }
 
-  void _showSelectDialog(SelectRequest req) {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: Text(req.title),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: req.options.map((opt) {
-            return ListTile(
-              title: Text(opt),
-              onTap: () {
-                Navigator.pop(ctx);
-                widget.stateManager.respondToUiRequest(
-                  ExtensionUiResponse(id: req.id, value: opt),
-                );
-              },
-            );
-          }).toList(),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              widget.stateManager.dismissUiRequest();
-            },
-            child: const Text('Cancel'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showConfirmDialog(ConfirmRequest req) {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: Text(req.title),
-        content: req.message != null ? Text(req.message!) : null,
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              widget.stateManager.respondToUiRequest(
-                ExtensionUiResponse(id: req.id, confirmed: false),
-              );
-            },
-            child: const Text('No'),
-          ),
-          FilledButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              widget.stateManager.respondToUiRequest(
-                ExtensionUiResponse(id: req.id, confirmed: true),
-              );
-            },
-            child: const Text('Yes'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showInputDialog(InputRequest req) {
-    final controller = TextEditingController();
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: Text(req.title),
-        content: TextField(
-          controller: controller,
-          decoration: InputDecoration(
-            hintText: req.placeholder,
-          ),
-          autofocus: true,
-          onSubmitted: (value) {
-            Navigator.pop(ctx);
-            widget.stateManager.respondToUiRequest(
-              ExtensionUiResponse(id: req.id, value: value),
-            );
-          },
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              widget.stateManager.dismissUiRequest();
-            },
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              widget.stateManager.respondToUiRequest(
-                ExtensionUiResponse(id: req.id, value: controller.text),
-              );
-            },
-            child: const Text('OK'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showEditorDialog(EditorRequest req) {
-    final controller = TextEditingController(text: req.prefill ?? '');
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: Text(req.title),
-        content: SizedBox(
-          width: 500,
-          height: 300,
-          child: TextField(
-            controller: controller,
-            maxLines: null,
-            expands: true,
-            decoration: const InputDecoration(
-              border: OutlineInputBorder(),
-              contentPadding: EdgeInsets.all(12),
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              widget.stateManager.dismissUiRequest();
-            },
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              widget.stateManager.respondToUiRequest(
-                ExtensionUiResponse(id: req.id, value: controller.text),
-              );
-            },
-            child: const Text('OK'),
-          ),
-        ],
-      ),
-    );
-  }
+  // ── Extension UI dialogs ─────────────────────────────────────────────────
+  // Delegate to ExtensionUiDialogs mixin for clean separation
 
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {

@@ -151,7 +151,13 @@ class _ShellScreenState extends State<ShellScreen> {
   Future<void> _loadSession(String sessionPath) async {
     setState(() => _ready = false);
 
-    await _client.restart(_client.cwd, sessionPath: sessionPath);
+    // Use the switch_session RPC command instead of killing the process.
+    // Per the RPC spec, this loads a different session file cleanly.
+    final res = await _client.switchSession(sessionPath);
+    if (res?.success != true) {
+      // Fall back to restart if switch_session fails
+      await _client.restart(_client.cwd);
+    }
     await _fetchModelsAndState();
 
     if (mounted) {
@@ -192,7 +198,7 @@ class _ShellScreenState extends State<ShellScreen> {
 
       setState(() => _ready = false);
 
-      // Try using new_session command first, fall back to restart
+      // Use the new_session RPC command per the spec
       final res = await _client.newSession();
       if (res?.success != true) {
         await _client.restart(_client.cwd);

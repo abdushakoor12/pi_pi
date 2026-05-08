@@ -92,6 +92,15 @@ class AgentStateManager extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Clear the current extension UI request without sending a response.
+  ///
+  /// This is used when [ExtensionUiDialogs] has already sent the response
+  /// directly via the client. It just clears the local state.
+  void clearUiRequest() {
+    _extensionUiRequest = null;
+    notifyListeners();
+  }
+
   /// Dismiss the current extension UI request (cancel).
   void dismissUiRequest() {
     if (_extensionUiRequest == null) return;
