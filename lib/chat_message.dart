@@ -1,3 +1,5 @@
+import 'models.dart';
+
 enum MessageRole { user, assistant, system }
 
 class ChatMessage {
@@ -6,6 +8,7 @@ class ChatMessage {
   final String? thinking;
   final List<ToolCall> toolCalls;
   final bool isStreaming;
+  final List<ImageContent> images;
 
   const ChatMessage({
     required this.role,
@@ -13,6 +16,7 @@ class ChatMessage {
     this.thinking,
     this.toolCalls = const [],
     this.isStreaming = false,
+    this.images = const [],
   });
 
   ChatMessage copyWith({
@@ -21,13 +25,15 @@ class ChatMessage {
     String? thinking,
     List<ToolCall>? toolCalls,
     bool? isStreaming,
+    List<ImageContent>? images,
   }) {
     return ChatMessage(
       role: role ?? this.role,
       text: text ?? this.text,
-      thinking: thinking ?? this.thinking,
+      thinking: thinking,
       toolCalls: toolCalls ?? this.toolCalls,
       isStreaming: isStreaming ?? this.isStreaming,
+      images: images ?? this.images,
     );
   }
 }

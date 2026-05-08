@@ -3,11 +3,12 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 
+import 'agent_state_manager.dart';
 import 'chat_screen.dart';
 import 'git_info.dart';
+import 'models.dart';
 import 'pi_rpc_client.dart';
 import 'project_manager.dart';
-
 import 'sidebar_panel.dart';
 
 /// Main desktop shell: persistent sidebar on the left + chat in the center +
@@ -30,12 +31,13 @@ class ShellScreen extends StatefulWidget {
 
 class _ShellScreenState extends State<ShellScreen> {
   late final PiRpcClient _client;
+  late final AgentStateManager _stateManager;
   bool _ready = false;
   bool _sidebarOpen = true;
 
   // Shared state
-  List<Map<String, dynamic>> _models = [];
-  Map<String, dynamic>? _currentModel;
+  List<Model> _models = [];
+  Model? _currentModel;
   String _currentThinkingLevel = '';
   String? _gitBranch;
   bool _isGitRepo = false;
@@ -47,7 +49,21 @@ class _ShellScreenState extends State<ShellScreen> {
   void initState() {
     super.initState();
     _client = PiRpcClient();
+    _stateManager = AgentStateManager(client: _client);
+    _stateManager.addListener(_onStateChange);
     _initClient();
+  }
+
+  @override
+  void dispose() {
+    _stateManager.removeListener(_onStateChange);
+    _stateManager.dispose();
+    _client.dispose();
+    super.dispose();
+  }
+
+  void _onStateChange() {
+    if (mounted) setState(() {});
   }
 
   Future<void> _initClient() async {
@@ -55,25 +71,27 @@ class _ShellScreenState extends State<ShellScreen> {
       _client.updateCwd(widget.initialCwd!);
     }
     await _client.start();
-    _client.events.listen(_handleEvent);
     await _fetchModelsAndState();
     await _updateGitInfo();
     if (mounted) setState(() => _ready = true);
   }
 
   Future<void> _fetchModelsAndState() async {
-    final modelsRes = await _client.request({'type': 'get_available_models'});
-    final stateRes = await _client.request({'type': 'get_state'});
+    final modelsRes = await _client.getAvailableModels();
+    final stateRes = await _client.getState();
     if (mounted) {
       setState(() {
-        if (modelsRes?['success'] == true) {
-          _models =
-              List<Map<String, dynamic>>.from(modelsRes!['data']['models'] ?? []);
+        if (modelsRes?.success == true && modelsRes?.data != null) {
+          final rawModels = modelsRes!.data!['models'] as List<dynamic>?;
+          _models = rawModels
+                  ?.map((m) => Model.fromJson(m as Map<String, dynamic>))
+                  .toList() ??
+              [];
         }
-        if (stateRes?['success'] == true) {
-          _currentModel = stateRes!['data']['model'] as Map<String, dynamic>?;
-          _currentThinkingLevel =
-              stateRes['data']['thinkingLevel'] as String? ?? '';
+        if (stateRes?.success == true && stateRes?.data != null) {
+          final state = AgentState.fromJson(stateRes!.data!);
+          _currentModel = state.model;
+          _currentThinkingLevel = state.thinkingLevel ?? '';
         }
       });
     }
@@ -124,7 +142,6 @@ class _ShellScreenState extends State<ShellScreen> {
 
     if (mounted) {
       setState(() => _ready = true);
-      // Wait for the next frame so ChatContent is built and its state is available
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _chatKey.currentState?.reset();
       });
@@ -139,7 +156,6 @@ class _ShellScreenState extends State<ShellScreen> {
 
     if (mounted) {
       setState(() => _ready = true);
-      // Wait for the next frame so ChatContent is built and its state is available
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _chatKey.currentState?.loadSession(sessionPath);
       });
@@ -176,26 +192,20 @@ class _ShellScreenState extends State<ShellScreen> {
 
       setState(() => _ready = false);
 
-      await _client.restart(_client.cwd);
+      // Try using new_session command first, fall back to restart
+      final res = await _client.newSession();
+      if (res?.success != true) {
+        await _client.restart(_client.cwd);
+      }
       await _fetchModelsAndState();
       await _updateGitInfo();
 
       if (mounted) {
         setState(() => _ready = true);
-        // Wait for the next frame so ChatContent is built and its state is available
         WidgetsBinding.instance.addPostFrameCallback((_) {
           _chatKey.currentState?.reset();
         });
       }
-    }
-  }
-
-  // ── Event handling ─────────────────────────────────────────────────────
-
-  void _handleEvent(Map<String, dynamic> event) {
-    final type = event['type'] as String?;
-    if (type == 'process_exit') {
-      if (mounted) setState(() => _ready = false);
     }
   }
 
@@ -222,15 +232,24 @@ class _ShellScreenState extends State<ShellScreen> {
 
   // ── Model selection ────────────────────────────────────────────────────
 
-  Future<void> _selectModel(Map<String, dynamic> model) async {
-    final res = await _client.request({
-      'type': 'set_model',
-      'provider': model['provider'],
-      'modelId': model['id'],
-    });
-    if (res?['success'] == true && res!['data'] != null) {
+  Future<void> _selectModel(Model model) async {
+    final res = await _client.setModel(model.provider, model.id);
+    if (res?.success == true && res?.data != null) {
       if (mounted) {
-        setState(() => _currentModel = res['data'] as Map<String, dynamic>);
+        setState(() => _currentModel = Model.fromJson(res!.data!));
+      }
+    }
+  }
+
+  Future<void> _cycleModel() async {
+    final res = await _client.cycleModel();
+    if (res?.success == true && res?.data != null) {
+      final modelData = res!.data!['model'] as Map<String, dynamic>?;
+      if (modelData != null && mounted) {
+        setState(() {
+          _currentModel = Model.fromJson(modelData);
+          _currentThinkingLevel = res.data!['thinkingLevel'] as String? ?? '';
+        });
       }
     }
   }
@@ -261,6 +280,7 @@ class _ShellScreenState extends State<ShellScreen> {
             gitBranch: _gitBranch,
             isGitRepo: _isGitRepo,
             onSelectModel: _selectModel,
+            onCycleModel: _cycleModel,
             onCycleTheme: _cycleTheme,
             onNewChat: _newChat,
             onChangeDirectory: _changeDirectory,
@@ -274,6 +294,7 @@ class _ShellScreenState extends State<ShellScreen> {
                 if (effectiveSidebarOpen)
                   SidebarPanel(
                     client: _client,
+                    stateManager: _stateManager,
                     gitBranch: _gitBranch,
                     isGitRepo: _isGitRepo,
                     onProjectSelected: (path) {
@@ -291,7 +312,11 @@ class _ShellScreenState extends State<ShellScreen> {
                 // Main chat area
                 Expanded(
                   child: _ready
-                      ? ChatContent(key: _chatKey, client: _client)
+                      ? ChatContent(
+                          key: _chatKey,
+                          client: _client,
+                          stateManager: _stateManager,
+                        )
                       : _buildLoading(cs),
                 ),
               ],
@@ -301,6 +326,7 @@ class _ShellScreenState extends State<ShellScreen> {
           // ── Status bar ───────────────────────────────────────────
           _StatusBar(
             client: _client,
+            stateManager: _stateManager,
             gitBranch: _gitBranch,
             isGitRepo: _isGitRepo,
             currentModel: _currentModel,
@@ -345,12 +371,13 @@ class _TopToolbar extends StatelessWidget {
   final VoidCallback onToggleSidebar;
   final PiRpcClient client;
   final bool ready;
-  final Map<String, dynamic>? currentModel;
-  final List<Map<String, dynamic>> models;
+  final Model? currentModel;
+  final List<Model> models;
   final String thinkingLevel;
   final String? gitBranch;
   final bool isGitRepo;
-  final ValueChanged<Map<String, dynamic>> onSelectModel;
+  final ValueChanged<Model> onSelectModel;
+  final VoidCallback onCycleModel;
   final VoidCallback onCycleTheme;
   final VoidCallback onNewChat;
   final VoidCallback onChangeDirectory;
@@ -366,6 +393,7 @@ class _TopToolbar extends StatelessWidget {
     required this.gitBranch,
     required this.isGitRepo,
     required this.onSelectModel,
+    required this.onCycleModel,
     required this.onCycleTheme,
     required this.onNewChat,
     required this.onChangeDirectory,
@@ -377,8 +405,7 @@ class _TopToolbar extends StatelessWidget {
     final cs = theme.colorScheme;
 
     final modelLabel = currentModel != null
-        ? '${currentModel!['name'] ?? currentModel!['id']}'
-            '${thinkingLevel.isNotEmpty ? ' ($thinkingLevel)' : ''}'
+        ? '${currentModel!.name}${thinkingLevel.isNotEmpty ? ' ($thinkingLevel)' : ''}'
         : (ready ? 'No model' : 'Loading...');
 
     return Container(
@@ -437,8 +464,7 @@ class _TopToolbar extends StatelessWidget {
                       color: cs.outlineVariant,
                     ),
                     const SizedBox(width: 6),
-                    Icon(Icons.call_split,
-                        size: 11, color: cs.primary),
+                    Icon(Icons.call_split, size: 11, color: cs.primary),
                     const SizedBox(width: 3),
                     Text(
                       gitBranch!,
@@ -458,7 +484,7 @@ class _TopToolbar extends StatelessWidget {
 
           // Model selector
           if (models.isNotEmpty)
-            PopupMenuButton<Map<String, dynamic>>(
+            PopupMenuButton<Model>(
               tooltip: 'Select model',
               onSelected: onSelectModel,
               offset: const Offset(0, 40),
@@ -490,9 +516,9 @@ class _TopToolbar extends StatelessWidget {
                 final popupCs = Theme.of(ctx).colorScheme;
                 return models.map((m) {
                   final isSelected = currentModel != null &&
-                      m['provider'] == currentModel!['provider'] &&
-                      m['id'] == currentModel!['id'];
-                  return PopupMenuItem<Map<String, dynamic>>(
+                      m.provider == currentModel!.provider &&
+                      m.id == currentModel!.id;
+                  return PopupMenuItem<Model>(
                     value: m,
                     child: Row(
                       children: [
@@ -508,7 +534,7 @@ class _TopToolbar extends StatelessWidget {
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            m['name'] as String? ?? m['id'] as String? ?? '',
+                            m.name,
                             style: TextStyle(
                               fontWeight:
                                   isSelected ? FontWeight.bold : FontWeight.normal,
@@ -517,7 +543,7 @@ class _TopToolbar extends StatelessWidget {
                           ),
                         ),
                         Text(
-                          m['provider'] as String? ?? '',
+                          m.provider,
                           style: TextStyle(
                             fontSize: 11,
                             color: popupCs.onSurfaceVariant,
@@ -531,6 +557,14 @@ class _TopToolbar extends StatelessWidget {
             ),
 
           const SizedBox(width: 4),
+
+          // Cycle model
+          IconButton(
+            icon: const Icon(Icons.swap_horiz, size: 20),
+            tooltip: 'Cycle model',
+            onPressed: ready ? onCycleModel : null,
+            visualDensity: VisualDensity.compact,
+          ),
 
           // New chat
           IconButton(
@@ -564,14 +598,16 @@ class _TopToolbar extends StatelessWidget {
 
 class _StatusBar extends StatelessWidget {
   final PiRpcClient client;
+  final AgentStateManager stateManager;
   final String? gitBranch;
   final bool isGitRepo;
-  final Map<String, dynamic>? currentModel;
+  final Model? currentModel;
   final String thinkingLevel;
   final bool ready;
 
   const _StatusBar({
     required this.client,
+    required this.stateManager,
     required this.gitBranch,
     required this.isGitRepo,
     required this.currentModel,
@@ -590,70 +626,102 @@ class _StatusBar extends StatelessWidget {
         ? '…/${parts.sublist(parts.length - 3).join('/')}'
         : cwd;
 
+    final statuses = stateManager.statuses.entries.toList();
+
     return Container(
-      height: 28,
-      padding: const EdgeInsets.symmetric(horizontal: 12),
+      height: statuses.isEmpty ? 28 : null,
+      constraints: const BoxConstraints(minHeight: 28),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
       decoration: BoxDecoration(
         color: cs.surfaceContainerHighest.withValues(alpha: 0.6),
         border: Border(
           top: BorderSide(color: cs.outlineVariant, width: 1),
         ),
       ),
-      child: Row(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          // Directory
-          Icon(Icons.folder, size: 12, color: cs.primary),
-          const SizedBox(width: 4),
-          Flexible(
-            child: Tooltip(
-              message: cwd,
-              child: Text(
-                displayPath,
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w500,
-                  color: cs.onSurfaceVariant,
+          Row(
+            children: [
+              // Directory
+              Icon(Icons.folder, size: 12, color: cs.primary),
+              const SizedBox(width: 4),
+              Flexible(
+                child: Tooltip(
+                  message: cwd,
+                  child: Text(
+                    displayPath,
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w500,
+                      color: cs.onSurfaceVariant,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
-                overflow: TextOverflow.ellipsis,
               ),
-            ),
-          ),
 
-          // Git branch
-          if (isGitRepo && gitBranch != null) ...[
-            const SizedBox(width: 8),
-            Container(width: 1, height: 14, color: cs.outlineVariant),
-            const SizedBox(width: 8),
-            Icon(Icons.call_split, size: 11, color: cs.primary),
-            const SizedBox(width: 3),
-            Text(
-              gitBranch!,
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                color: cs.primary,
+              // Git branch
+              if (isGitRepo && gitBranch != null) ...[
+                const SizedBox(width: 8),
+                Container(width: 1, height: 14, color: cs.outlineVariant),
+                const SizedBox(width: 8),
+                Icon(Icons.call_split, size: 11, color: cs.primary),
+                const SizedBox(width: 3),
+                Text(
+                  gitBranch!,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: cs.primary,
+                  ),
+                ),
+              ],
+
+              const Spacer(),
+
+              // Extension statuses
+              if (statuses.isNotEmpty)
+                ...statuses.take(3).map((entry) {
+                  return Container(
+                    margin: const EdgeInsets.only(left: 6),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: cs.secondaryContainer,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      entry.value,
+                      style: TextStyle(
+                        fontSize: 9,
+                        color: cs.onSecondaryContainer,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  );
+                }),
+
+              const SizedBox(width: 8),
+
+              // Connection status
+              Container(
+                width: 6,
+                height: 6,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: ready ? cs.tertiary : cs.error,
+                ),
               ),
-            ),
-          ],
-
-          const Spacer(),
-
-          // Connection status
-          Container(
-            width: 6,
-            height: 6,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: ready ? cs.tertiary : cs.error,
-            ),
-          ),
-          const SizedBox(width: 4),
-          Text(
-            ready ? 'Connected' : 'Disconnected',
-            style: TextStyle(
-              fontSize: 10,
-              color: ready ? cs.tertiary : cs.error,
-            ),
+              const SizedBox(width: 4),
+              Text(
+                ready ? 'Connected' : 'Disconnected',
+                style: TextStyle(
+                  fontSize: 10,
+                  color: ready ? cs.tertiary : cs.error,
+                ),
+              ),
+            ],
           ),
         ],
       ),
